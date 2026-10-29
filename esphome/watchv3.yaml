@@ -1,0 +1,54 @@
+# ==============================================================================
+# Waveshare ESP32-S3-Touch-AMOLED-2.06 Smart Watch & Desk Controller (v3)
+# Rollback Note: esphome/watchv1.yaml is preserved untouched for easy rollback.
+# ==============================================================================
+
+substitutions:
+  name: esphome-web-ac9df8
+  friendly_name: Xiaozhi Watch
+  timezone: America/Chicago
+
+  # Home Assistant Entities
+  on_air_entity: "switch.on_air_screen_7b_on_air_status"
+  weather_entity: "weather.forecast_home"
+
+  # Display & Theme Settings
+  font_family: Figtree
+  font_glyphsets: "GF_Latin_Core"
+  startup_sound: "Home_Connected"
+  startup_sound_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/sounds/${startup_sound}.flac
+
+  # Local 410x502 Assets
+  loading_illustration_file: "assets/images/loading.png"
+  idle_illustration_file: "assets/images/idle.png"
+  listening_illustration_file: "assets/images/listening.png"
+  thinking_illustration_file: "assets/images/thinking.png"
+  replying_illustration_file: "assets/images/replying.png"
+  error_illustration_file: "assets/images/error.png"
+  timer_finished_illustration_file: "assets/images/timer_finished.png"
+  mute_illustration_file: "assets/images/mute.png"
+
+  loading_illustration_background_color: "000000"
+  idle_illustration_background_color: "000000"
+  listening_illustration_background_color: "000000"
+  thinking_illustration_background_color: "000000"
+  replying_illustration_background_color: "000000"
+  error_illustration_background_color: "000000"
+
+  # Voice Assistant Phase IDs
+  voice_assist_idle_phase_id: "1"
+  voice_assist_listening_phase_id: "2"
+  voice_assist_thinking_phase_id: "3"
+  voice_assist_replying_phase_id: "4"
+  voice_assist_not_ready_phase_id: "10"
+  voice_assist_error_phase_id: "11"
+  voice_assist_muted_phase_id: "12"
+  voice_assist_timer_finished_phase_id: "20"
+
+packages:
+  base: !include common/base.yaml
+  power_imu: !include common/power_imu.yaml
+  sdcard: !include common/sdcard.yaml
+  audio_voice: !include common/audio_voice.yaml
+  touch_nav: !include common/touch_nav.yaml
+  display: !include pages/display.yaml

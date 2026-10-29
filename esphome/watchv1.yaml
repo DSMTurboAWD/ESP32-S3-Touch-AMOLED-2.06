@@ -166,16 +166,25 @@ binary_sensor:
               else:
                 - if:
                     condition:
-                      lambda: return id(wake_word_engine_location).state == "On device";
+                      lambda: return id(watch_mode);
                     then:
+                      # Switch to voice assistant mode
+                      - lambda: id(watch_mode) = false;
+                      - script.execute: draw_display
+                    else:
+                      # Already in voice assistant mode, handle normally
                       - if:
                           condition:
-                            not:
-                              voice_assistant.is_running:
+                            lambda: return id(wake_word_engine_location).state == "On device";
                           then:
-                            - voice_assistant.start:
-                          else:
-                            - voice_assistant.stop:  
+                            - if:
+                                condition:
+                                  not:
+                                    voice_assistant.is_running:
+                                then:
+                                  - voice_assistant.start:
+                                else:
+                                  - voice_assistant.stop:  
 
   - platform: gpio
     pin:
@@ -198,12 +207,21 @@ binary_sensor:
               else:
                 - if:
                     condition:
-                      not:
-                        voice_assistant.is_running:
+                      lambda: return id(watch_mode);
                     then:
-                      - voice_assistant.start:                     
+                      # Switch to voice assistant mode
+                      - lambda: id(watch_mode) = false;
+                      - script.execute: draw_display
                     else:
-                      - voice_assistant.stop:                     
+                      # Already in voice assistant mode, handle normally
+                      - if:
+                          condition:
+                            not:
+                              voice_assistant.is_running:
+                          then:
+                            - voice_assistant.start:                     
+                          else:
+                            - voice_assistant.stop:                     
       - timing:
           - ON for at least 10s
         then:
@@ -388,6 +406,8 @@ voice_assistant:
     - text_sensor.template.publish:
         id: text_response
         state: ""
+    # Return to watch mode after 10 seconds
+    - script.execute: return_to_watch_mode
   on_error:
     - if:
         condition:
@@ -437,52 +457,61 @@ script:
           then:
             - if:
                 condition:
-                  wifi.connected:
+                  lambda: return id(watch_mode);
                 then:
-                  - if:
-                      condition:
-                        api.connected:
-                      then:
-                        - lambda: |
-                            switch(id(voice_assistant_phase)) {
-                              case ${voice_assist_listening_phase_id}:
-                                id(main_display).show_page(listening_page);
-                                id(main_display).update();
-                                break;
-                              case ${voice_assist_thinking_phase_id}:
-                                id(main_display).show_page(thinking_page);
-                                id(main_display).update();
-                                break;
-                              case ${voice_assist_replying_phase_id}:
-                                id(main_display).show_page(replying_page);
-                                id(main_display).update();
-                                break;
-                              case ${voice_assist_error_phase_id}:
-                                id(main_display).show_page(error_page);
-                                id(main_display).update();
-                                break;
-                              case ${voice_assist_muted_phase_id}:
-                                id(main_display).show_page(muted_page);
-                                id(main_display).update();
-                                break;
-                              case ${voice_assist_not_ready_phase_id}:
-                                id(main_display).show_page(no_ha_page);
-                                id(main_display).update();
-                                break;
-                              case ${voice_assist_timer_finished_phase_id}:
-                                id(main_display).show_page(timer_finished_page);
-                                id(main_display).update();
-                                break;
-                              default:
-                                id(main_display).show_page(idle_page);
-                                id(main_display).update();
-                            }
-                      else:
-                        - display.page.show: clock_page
-                        - component.update: main_display
-                else:
+                  # Watch mode - always show clock
                   - display.page.show: clock_page
                   - component.update: main_display
+                else:
+                  # Voice assistant mode
+                  - if:
+                      condition:
+                        wifi.connected:
+                      then:
+                        - if:
+                            condition:
+                              api.connected:
+                            then:
+                              - lambda: |
+                                  switch(id(voice_assistant_phase)) {
+                                    case ${voice_assist_listening_phase_id}:
+                                      id(main_display).show_page(listening_page);
+                                      id(main_display).update();
+                                      break;
+                                    case ${voice_assist_thinking_phase_id}:
+                                      id(main_display).show_page(thinking_page);
+                                      id(main_display).update();
+                                      break;
+                                    case ${voice_assist_replying_phase_id}:
+                                      id(main_display).show_page(replying_page);
+                                      id(main_display).update();
+                                      break;
+                                    case ${voice_assist_error_phase_id}:
+                                      id(main_display).show_page(error_page);
+                                      id(main_display).update();
+                                      break;
+                                    case ${voice_assist_muted_phase_id}:
+                                      id(main_display).show_page(muted_page);
+                                      id(main_display).update();
+                                      break;
+                                    case ${voice_assist_not_ready_phase_id}:
+                                      id(main_display).show_page(no_ha_page);
+                                      id(main_display).update();
+                                      break;
+                                    case ${voice_assist_timer_finished_phase_id}:
+                                      id(main_display).show_page(timer_finished_page);
+                                      id(main_display).update();
+                                      break;
+                                    default:
+                                      id(main_display).show_page(idle_page);
+                                      id(main_display).update();
+                                  }
+                            else:
+                              - display.page.show: no_ha_page
+                              - component.update: main_display
+                      else:
+                        - display.page.show: no_wifi_page
+                        - component.update: main_display
           else:
             - display.page.show: initializing_page
             - component.update: main_display
@@ -640,6 +669,12 @@ script:
             id(external_media_player)
               ->play_file(sound_file, true, false);
           }
+  
+  - id: return_to_watch_mode
+    then:
+      - delay: 10s
+      - lambda: id(watch_mode) = true;
+      - script.execute: draw_display
 
 switch:
   - platform: template
@@ -766,6 +801,10 @@ select:
 
 globals:
   - id: init_in_progress
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: watch_mode
     type: bool
     restore_value: false
     initial_value: "true"

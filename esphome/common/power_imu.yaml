@@ -1,0 +1,239 @@
+# AXP2101 Power Management, QMI8658 6-Axis IMU, Haptic Motor (GPIO18), and Brightness
+
+output:
+  - platform: gpio
+    id: haptic_motor_out
+    pin: GPIO18
+
+switch:
+  - platform: template
+    id: haptics_enabled
+    name: "Haptic Feedback"
+    icon: "mdi:vibrate"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  - platform: template
+    id: auto_sleep_enabled
+    name: "Auto Screen Sleep (60s)"
+    icon: "mdi:sleep"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: template
+    id: wrist_wake_enabled
+    name: "IMU Wrist Tilt Wake"
+    icon: "mdi:watch-vibrate"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+number:
+  - platform: template
+    name: "Screen Brightness"
+    id: screen_brightness
+    icon: "mdi:brightness-6"
+    min_value: 0
+    max_value: 255
+    step: 5
+    initial_value: 180
+    optimistic: true
+    restore_value: true
+    set_action:
+      - lambda: |-
+          id(saved_brightness) = (uint8_t)x;
+          if (!id(screen_asleep)) {
+            id(main_display).set_brightness((uint8_t)x);
+          }
+
+script:
+  - id: buzz_haptic
+    mode: restart
+    parameters:
+      duration_ms: int
+    then:
+      - if:
+          condition:
+            switch.is_on: haptics_enabled
+          then:
+            - output.turn_on: haptic_motor_out
+            - delay: !lambda "return duration_ms;"
+            - output.turn_off: haptic_motor_out
+
+  - id: wake_screen
+    then:
+      - lambda: |-
+          id(last_touch_ms) = millis();
+          if (id(screen_asleep)) {
+            id(screen_asleep) = false;
+            uint8_t bri = id(saved_brightness) > 15 ? id(saved_brightness) : 180;
+            id(main_display).set_brightness(bri);
+            id(draw_display).execute();
+          }
+
+sensor:
+  - platform: template
+    id: pitch_deg
+    name: "QMI8658 Pitch"
+    unit_of_measurement: "°"
+    accuracy_decimals: 1
+    state_class: measurement
+    entity_category: diagnostic
+    on_value_range:
+      - below: -12
+        then:
+          - if:
+              condition:
+                switch.is_on: wrist_wake_enabled
+              then:
+                - script.execute: wake_screen
+  - platform: template
+    id: roll_deg
+    name: "QMI8658 Roll"
+    unit_of_measurement: "°"
+    accuracy_decimals: 1
+    state_class: measurement
+    entity_category: diagnostic
+  - platform: template
+    id: imu_temp
+    name: "Watch Internal Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    device_class: temperature
+    state_class: measurement
+    entity_category: diagnostic
+  - platform: template
+    id: bat_v
+    name: "Battery Voltage"
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    device_class: voltage
+    state_class: measurement
+  - platform: template
+    id: bat_pct
+    name: "Battery Level"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    device_class: battery
+    state_class: measurement
+
+binary_sensor:
+  - platform: template
+    id: usb_power
+    name: "USB Power Present"
+    device_class: power
+  - platform: template
+    id: charging
+    name: "Battery Charging"
+    device_class: battery_charging
+
+interval:
+  - interval: 250ms
+    then:
+      - lambda: |-
+          using esphome::i2c::ERROR_OK;
+
+          constexpr uint8_t QMI_ADDR = 0x6B;  // IMU
+          constexpr uint8_t AXP_ADDR = 0x34;  // PMIC
+
+          auto write_u8 = [&](uint8_t reg, uint8_t value) -> bool {
+            uint8_t buf[2] = {reg, value};
+            return id(bus_a)->write(QMI_ADDR, buf, 2) == ERROR_OK;
+          };
+          auto read_block = [&](uint8_t reg, uint8_t *data, uint8_t len) -> bool {
+            if (id(bus_a)->write(QMI_ADDR, &reg, 1) != ERROR_OK) return false;
+            delayMicroseconds(300);
+            return id(bus_a)->read(QMI_ADDR, data, len) == ERROR_OK;
+          };
+          auto axp_read = [&](uint8_t reg, uint8_t *data, uint8_t len) -> bool {
+            if (id(bus_a)->write(AXP_ADDR, &reg, 1) != ERROR_OK) return false;
+            delayMicroseconds(200);
+            return id(bus_a)->read(AXP_ADDR, data, len) == ERROR_OK;
+          };
+          auto axp_write_u8 = [&](uint8_t reg, uint8_t val) -> bool {
+            uint8_t buf[2] = {reg, val};
+            return id(bus_a)->write(AXP_ADDR, buf, 2) == ERROR_OK;
+          };
+
+          static bool inited = false;
+          static uint32_t t0 = 0;
+          if (!inited) {
+            if (t0 == 0) t0 = millis();
+            if (millis() - t0 < 800) return;
+
+            uint8_t who = 0;
+            if (read_block(0x00, &who, 1) && who == 0x05) {
+              write_u8(0x02, (1 << 6));                          // CTRL1 auto-increment
+              write_u8(0x03, (0b010 << 4) | (0b0100));           // CTRL2 accel +-8g
+              write_u8(0x04, (0b101 << 4) | (0b0100));           // CTRL3 gyro +-512dps
+              write_u8(0x06, (1 << 4) | (0b10 << 1) | (1 << 0)); // CTRL5 LPF
+              write_u8(0x08, (1 << 1) | (1 << 0));               // CTRL7 enable accel+gyro
+            }
+
+            // Ensure AXP2101 fuel-gauge is enabled (reg 0x18 bit3)
+            uint8_t r18 = 0;
+            if (axp_read(0x18, &r18, 1) && !(r18 & 0x08)) {
+              axp_write_u8(0x18, r18 | 0x08);
+            }
+            inited = true;
+          }
+
+          // Read IMU TEMP + ACCEL at 4Hz
+          uint8_t raw[8] = {0};
+          if (read_block(0x33, raw, sizeof(raw))) {
+            auto s16 = [](uint8_t lo, uint8_t hi) -> int16_t { return (int16_t)((hi << 8) | lo); };
+            int16_t axr = s16(raw[2], raw[3]);
+            int16_t ayr = s16(raw[4], raw[5]);
+            int16_t azr = s16(raw[6], raw[7]);
+
+            const float acc_cnt_per_g = 32768.0f / 8.0f;
+            float ax_g = axr / acc_cnt_per_g;
+            float ay_g = ayr / acc_cnt_per_g;
+            float az_g = azr / acc_cnt_per_g;
+
+            float roll_val  = atan2f(ay_g, az_g) * 180.0f / 3.14159265f;
+            float pitch_val = atan2f(-ax_g, sqrtf(ay_g * ay_g + az_g * az_g)) * 180.0f / 3.14159265f;
+
+            id(roll_deg).publish_state(roll_val);
+            id(pitch_deg).publish_state(pitch_val);
+          }
+
+          // Read AXP2101 battery & IMU temperature every 2 seconds
+          static uint32_t last_slow = 0;
+          uint32_t now_ms = millis();
+          if (now_ms - last_slow >= 2000) {
+            last_slow = now_ms;
+
+            int8_t t_hi = (int8_t)raw[1];
+            float t_c = (float)t_hi + (raw[0] / 256.0f);
+            if (t_c > -20.0f && t_c < 85.0f) {
+              id(imu_temp).publish_state(t_c);
+            }
+
+            uint8_t vbat_hi = 0, vbat_lo = 0;
+            if (axp_read(0x34, &vbat_hi, 1) && axp_read(0x35, &vbat_lo, 1)) {
+              uint16_t raw14 = ((vbat_hi & 0x3F) << 8) | vbat_lo;
+              id(bat_v).publish_state(raw14 / 1000.0f);
+            }
+
+            uint8_t pct = 0;
+            if (axp_read(0xA4, &pct, 1)) {
+              if (pct > 100) pct = 100;
+              id(bat_pct).publish_state((float)pct);
+            }
+
+            uint8_t st1 = 0;
+            if (axp_read(0x00, &st1, 1)) {
+              bool vbus_good = (st1 & (1 << 5));
+              id(usb_power).publish_state(vbus_good);
+            }
+
+            uint8_t st2 = 0;
+            if (axp_read(0x01, &st2, 1)) {
+              uint8_t cs = st2 & 0x07;
+              bool chg = (cs <= 0b011);
+              id(charging).publish_state(chg);
+            }
+          }

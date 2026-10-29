@@ -1,0 +1,48 @@
+# 1-bit SDMMC Card Support (CLK=GPIO2, CMD=GPIO1, D0=GPIO3)
+
+script:
+  - id: refresh_sdcard
+    then:
+      - lambda: |-
+          bool ok = watch_sdcard::mount_sdcard();
+          id(sd_mounted).publish_state(ok);
+          if (ok) {
+            id(sd_total_mb).publish_state(watch_sdcard::get_total_mb());
+            id(sd_free_mb).publish_state(watch_sdcard::get_free_mb());
+          } else {
+            id(sd_total_mb).publish_state(0.0f);
+            id(sd_free_mb).publish_state(0.0f);
+          }
+
+binary_sensor:
+  - platform: template
+    id: sd_mounted
+    name: "SD Card Mounted"
+    icon: "mdi:micro-sd"
+    entity_category: diagnostic
+
+sensor:
+  - platform: template
+    id: sd_total_mb
+    name: "SD Card Total Size"
+    unit_of_measurement: "MB"
+    accuracy_decimals: 0
+    icon: "mdi:sd"
+    entity_category: diagnostic
+  - platform: template
+    id: sd_free_mb
+    name: "SD Card Free Space"
+    unit_of_measurement: "MB"
+    accuracy_decimals: 0
+    icon: "mdi:sd"
+    entity_category: diagnostic
+
+button:
+  - platform: template
+    id: remount_sd_button
+    name: "Remount SD Card"
+    icon: "mdi:micro-sd"
+    entity_category: config
+    on_press:
+      - script.execute: refresh_sdcard
+      - script.execute: draw_display

@@ -1,0 +1,223 @@
+# FT3168/FT63X6 Touchscreen Polling, Screen Cycling, and Interactive Hit-Testing
+
+touchscreen:
+  - platform: ft63x6
+    id: my_touchscreen
+    i2c_id: bus_a
+    display: main_display
+    update_interval: 50ms
+    on_touch:
+      then:
+        - logger.log:
+            format: "Touch at (%d, %d) on page %d (watch_mode=%d)"
+            args: [touch.x, touch.y, 'id(current_page_index)', 'id(watch_mode)']
+        - script.execute:
+            id: handle_touch_event
+            x: !lambda return touch.x;
+            y: !lambda return touch.y;
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: 0
+      mode: INPUT_PULLUP
+      ignore_strapping_warning: true
+      inverted: true
+    id: left_top_button
+    internal: true
+    on_multi_click:
+      # Short press: wake screen, stop ringing timer, or trigger Voice Assistant
+      - timing:
+          - ON for at least 50ms
+          - OFF for at least 50ms
+        then:
+          - script.execute:
+              id: buzz_haptic
+              duration_ms: 25
+          - if:
+              condition:
+                lambda: return id(screen_asleep);
+              then:
+                - script.execute: wake_screen
+              else:
+                - if:
+                    condition:
+                      switch.is_on: timer_ringing
+                    then:
+                      - switch.turn_off: timer_ringing
+                    else:
+                      - if:
+                          condition:
+                            lambda: return id(watch_mode);
+                          then:
+                            - lambda: id(watch_mode) = false;
+                            - script.execute: draw_display
+                            - voice_assistant.start:
+                          else:
+                            - if:
+                                condition:
+                                  voice_assistant.is_running:
+                                then:
+                                  - voice_assistant.stop:
+                                else:
+                                  - lambda: id(watch_mode) = true;
+                                  - script.execute: draw_display
+      # 10s hold: Factory Reset
+      - timing:
+          - ON for at least 10s
+        then:
+          - button.press: factory_reset_btn
+
+script:
+  - id: start_va_from_ui
+    then:
+      - lambda: id(watch_mode) = false;
+      - script.execute: draw_display
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - voice_assistant.start:
+
+  - id: handle_touch_event
+    parameters:
+      x: int
+      y: int
+    then:
+      - lambda: |-
+          uint32_t now = millis();
+          if (now - id(last_tap_action_ms) < 250) {
+            return;
+          }
+          id(last_tap_action_ms) = now;
+          id(last_touch_ms) = now;
+
+          // 1. Wake screen if asleep
+          if (id(screen_asleep)) {
+            id(wake_screen).execute();
+            id(buzz_haptic).execute(20);
+            return;
+          }
+
+          id(buzz_haptic).execute(20);
+
+          // 2. Dismiss timer alarm if ringing
+          if (id(timer_ringing).state) {
+            id(timer_ringing).turn_off();
+            return;
+          }
+
+          // 3. If in Voice Assistant overlay mode
+          if (!id(watch_mode)) {
+            // Tap top/bottom or left edge returns to watch mode if not actively speaking, or stops VA
+            if (x < 90 || y > 420) {
+              id(va).request_stop();
+              id(watch_mode) = true;
+              id(draw_display).execute();
+            } else {
+              if (id(va).is_running()) {
+                id(va).request_stop();
+              } else {
+                id(va).request_start(false, false);
+              }
+            }
+            return;
+          }
+
+          // 4. In Watch Mode: Left / Right Edge or Bottom Nav Bar cycles screens
+          if (x < 75) {
+            id(current_page_index) = (id(current_page_index) + 3) % 4;
+            id(draw_display).execute();
+            return;
+          }
+          if (x > 335) {
+            id(current_page_index) = (id(current_page_index) + 1) % 4;
+            id(draw_display).execute();
+            return;
+          }
+
+          // 5. Center Interactive Area (75 <= x <= 335) per active page
+          int page = id(current_page_index);
+          bool ha_ok = id(ha_api).is_connected();
+
+          if (page == 0) {
+            // Clock Page:
+            // Tap Wi-Fi status line (y: 265..320) when offline wakes Wi-Fi
+            if (y >= 265 && y <= 320 && !id(wifi_client).is_connected()) {
+              id(try_wifi_reconnect).execute();
+            }
+            // On-Air quick pill (y: 330..385)
+            else if (y >= 330 && y <= 385) {
+              if (ha_ok) id(toggle_on_air_light).execute();
+              else id(try_wifi_reconnect).execute();
+            }
+            // Voice Assistant / Reconnect button (y: 390..445)
+            else if (y >= 390 && y <= 445) {
+              if (ha_ok) id(start_va_from_ui).execute();
+              else id(try_wifi_reconnect).execute();
+            }
+          } else if (page == 1) {
+            // Weather Page: tap center refreshes display (or checks Wi-Fi if offline)
+            if (!id(wifi_client).is_connected()) {
+              id(try_wifi_reconnect).execute();
+            } else {
+              id(draw_display).execute();
+            }
+          } else if (page == 2) {
+            // In-Meeting / On-Air Page: tap large toggle button (y: 140..390)
+            if (y >= 140 && y <= 390) {
+              if (ha_ok) id(toggle_on_air_light).execute();
+              else id(try_wifi_reconnect).execute();
+            }
+          } else if (page == 3) {
+            // Mini Controls & Diagnostics Page (2x3 Grid + Bottom Bar)
+            bool left_col = (x <= 205);
+
+            if (y >= 90 && y <= 175) {
+              // Row 1: [On-Air Toggle] | [Mic Mute Toggle]
+              if (left_col) {
+                id(toggle_on_air_light).execute();
+              } else {
+                if (id(mute).state) {
+                  id(mute).turn_off();
+                } else {
+                  id(mute).turn_on();
+                }
+              }
+            } else if (y >= 185 && y <= 270) {
+              // Row 2: [Brightness Preset] | [Speaker Volume Preset]
+              if (left_col) {
+                float cur = id(screen_brightness).state;
+                float next_bri = (cur < 100.0f) ? 160.0f : (cur < 210.0f ? 255.0f : 65.0f);
+                auto call = id(screen_brightness).make_call();
+                call.set_value(next_bri);
+                call.perform();
+                id(draw_display).execute();
+              } else {
+                id(volume_step_index) = (id(volume_step_index) + 1) % 4;
+                const float vols[4] = {0.25f, 0.50f, 0.75f, 1.00f};
+                id(external_media_player)
+                  ->make_call()
+                  .set_volume(vols[id(volume_step_index)])
+                  .perform();
+                id(draw_display).execute();
+              }
+            } else if (y >= 280 && y <= 365) {
+              // Row 3: [Voice Assistant] | [Screen Sleep]
+              if (left_col) {
+                id(start_va_from_ui).execute();
+              } else {
+                id(screen_asleep) = true;
+                id(main_display).set_brightness(0);
+              }
+            } else if (y >= 375 && y <= 445) {
+              // Bottom Diagnostics Row: [Refresh SD] | [Restart Watch]
+              if (left_col) {
+                id(refresh_sdcard).execute();
+                id(draw_display).execute();
+              } else {
+                id(restart_button).press();
+              }
+            }
+          }

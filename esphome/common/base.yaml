@@ -1,0 +1,248 @@
+# Core ESP32-S3 Hardware, Standalone RTC Timekeeping, Low-Power Offline Wi-Fi & HA Integrations
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2025.5.0
+  name_add_mac_suffix: false
+  includes:
+    - common/sdcard_helper.h
+  on_boot:
+    priority: 600
+    then:
+      - lambda: |-
+          id(last_touch_ms) = millis();
+      - pcf85063.read_time:
+          id: rtc_time
+      - script.execute: draw_display
+      - delay: 2s
+      - script.execute: refresh_sdcard
+      - lambda: id(init_in_progress) = false;
+      - script.execute: draw_display
+      - script.execute: wifi_offline_power_saver
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+api:
+  id: ha_api
+  reboot_timeout: 0s
+  homeassistant_services: true
+  homeassistant_states: true
+  on_client_connected:
+    - lambda: id(init_in_progress) = false;
+    - script.execute: draw_display
+    - if:
+        condition:
+          switch.is_on: startup_sound_switch
+        then:
+          - delay: 300ms
+          - script.execute:
+              id: play_sound
+              priority: true
+              sound_file: !lambda return id(ready_sound);
+          - delay: 300ms
+  on_client_disconnected:
+    - script.execute: draw_display
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+wifi:
+  id: wifi_client
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  reboot_timeout: 0s
+  power_save_mode: LIGHT
+  on_connect:
+    - logger.log: "WiFi connected!"
+    - lambda: id(wifi_sleeping_offline) = false;
+    - script.execute: stop_wifi_saver_timer
+    - script.execute: draw_display
+  on_disconnect:
+    - logger.log: "WiFi disconnected - starting 45s offline power-save timer"
+    - script.execute: draw_display
+    - script.execute: wifi_offline_power_saver
+
+i2c:
+  - id: bus_a
+    scl: GPIO14
+    sda: GPIO15
+    scan: true
+
+spi:
+  id: display_qspi
+  type: quad
+  clk_pin: 11
+  data_pins: [4, 5, 6, 7]
+
+time:
+  - platform: pcf85063
+    id: rtc_time
+    i2c_id: bus_a
+    address: 0x51
+    update_interval: 10min
+  - platform: homeassistant
+    id: ha_time
+    timezone: ${timezone}
+    on_time_sync:
+      then:
+        - logger.log: "Time synchronized with Home Assistant -> updating PCF85063 RTC"
+        - pcf85063.write_time:
+            id: rtc_time
+        - script.execute: draw_display
+  - platform: sntp
+    id: sntp_time
+    timezone: ${timezone}
+    servers:
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+      - 2.pool.ntp.org
+    on_time_sync:
+      then:
+        - logger.log: "Time synchronized with NTP -> updating PCF85063 RTC"
+        - pcf85063.write_time:
+            id: rtc_time
+        - script.execute: draw_display
+
+interval:
+  # 1-second live refresh for real-time HH:mm:ss clock and inactivity auto-sleep
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(init_in_progress)) return;
+
+          // Check auto-sleep timeout (60s of touch inactivity while in watch mode)
+          if (id(auto_sleep_enabled).state && !id(screen_asleep) && id(watch_mode)) {
+            if (millis() - id(last_touch_ms) > 60000UL) {
+              id(screen_asleep) = true;
+              id(main_display).set_brightness(0);
+              return;
+            }
+          }
+
+          // Live 1Hz redraw when awake on Clock Page (page 0) or when a timer is active
+          if (!id(screen_asleep)) {
+            if ((id(watch_mode) && id(current_page_index) == 0) || id(global_is_timer_active)) {
+              id(draw_display).execute();
+            }
+          }
+
+  # Every 10 minutes: if Wi-Fi is powered down while away from home, briefly wake radio to check coverage
+  - interval: 10min
+    then:
+      - if:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - logger.log: "10-minute offline check: enabling WiFi for 45s to check coverage"
+            - script.execute: try_wifi_reconnect
+
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    internal: true
+  - platform: restart
+    id: restart_button
+    name: "Restart Watch"
+    icon: "mdi:restart"
+
+# Home Assistant Entity Subscriptions (On-Air Light & Weather)
+binary_sensor:
+  - platform: homeassistant
+    id: ha_on_air_state
+    entity_id: ${on_air_entity}
+    on_state:
+      then:
+        - script.execute: draw_display
+
+text_sensor:
+  - platform: wifi_info
+    ssid:
+      name: "WiFi SSID"
+      id: wifi_ssid
+  - platform: homeassistant
+    id: ha_weather_condition
+    entity_id: ${weather_entity}
+    on_value:
+      then:
+        - script.execute: draw_display
+
+sensor:
+  - platform: homeassistant
+    id: ha_weather_temp
+    entity_id: ${weather_entity}
+    attribute: temperature
+    on_value:
+      then:
+        - script.execute: draw_display
+  - platform: homeassistant
+    id: ha_weather_humidity
+    entity_id: ${weather_entity}
+    attribute: humidity
+    on_value:
+      then:
+        - script.execute: draw_display
+  - platform: homeassistant
+    id: ha_weather_wind
+    entity_id: ${weather_entity}
+    attribute: wind_speed
+    on_value:
+      then:
+        - script.execute: draw_display
+
+script:
+  - id: toggle_on_air_light
+    then:
+      - if:
+          condition:
+            api.connected:
+          then:
+            - homeassistant.action:
+                action: switch.toggle
+                data:
+                  entity_id: ${on_air_entity}
+
+  # Waits 45s when disconnected; if still not connected, disables Wi-Fi radio to save battery
+  - id: wifi_offline_power_saver
+    mode: restart
+    then:
+      - delay: 45s
+      - if:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - logger.log: "No WiFi coverage after 45s -> disabling WiFi radio for 10min to save battery"
+            - lambda: id(wifi_sleeping_offline) = true;
+            - wifi.disable:
+            - script.execute: draw_display
+
+  - id: stop_wifi_saver_timer
+    then:
+      - script.stop: wifi_offline_power_saver
+
+  - id: try_wifi_reconnect
+    mode: restart
+    then:
+      - lambda: id(wifi_sleeping_offline) = false;
+      - wifi.enable:
+      - script.execute: draw_display
+      - script.execute: wifi_offline_power_saver
