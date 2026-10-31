@@ -13,6 +13,7 @@ script:
             id(sd_total_mb).publish_state(0.0f);
             id(sd_free_mb).publish_state(0.0f);
           }
+      - script.execute: draw_display
 
 binary_sensor:
   - platform: template

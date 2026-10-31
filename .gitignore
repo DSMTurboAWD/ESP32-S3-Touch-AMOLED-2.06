@@ -1,2 +1,65 @@
+# ==============================================================================
+# 1. Secrets & Credentials
+# ==============================================================================
 *secrets.yaml
-examples/*
+secrets.*.yaml
+.env
+*.pem
+*.key
+
+# ==============================================================================
+# 2. ESPHome & PlatformIO (Downloaded at build time: gfonts, libdeps, toolchains)
+# ==============================================================================
+**/.esphome/
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+
+# ==============================================================================
+# 3. ESP-IDF & CMake (Equivalent of node_modules / NuGet packages)
+# ==============================================================================
+# Automatically fetched via idf_component.yml at build time:
+**/managed_components/
+**/components/xpwerslib/
+
+# Build output directories at any depth:
+**/build/
+**/cmake-build-*/
+**/sdkconfig.old
+
+# ==============================================================================
+# 4. Compiled Firmware & Object Artifacts
+# ==============================================================================
+*.elf
+*.map
+*.hex
+*.uf2
+*.o
+*.obj
+*.a
+*.d
+
+# Ignore compiled .bin files everywhere EXCEPT the factory recovery binary
+*.bin
+!reference/FirmWare/*.bin
+
+# ==============================================================================
+# 5. Vendor SDK Demos, Bundled Libraries & Sample Media
+# ==============================================================================
+# Bundled third-party Arduino libraries (LVGL, Arduino_GFX, SensorLib, etc.)
+reference/examples/Arduino-v3.2.0/libraries/
+# Sample AVI video files
+reference/Material/videos/*.avi
+# Ignore vendor SDK examples folder
+reference/examples/
+
+# ==============================================================================
+# 6. Python / Virtual Environments / OS & Editor Files
+# ==============================================================================
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+Desktop.ini

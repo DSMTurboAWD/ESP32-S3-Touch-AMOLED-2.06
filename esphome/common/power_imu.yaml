@@ -163,6 +163,20 @@ interval:
             if (t0 == 0) t0 = millis();
             if (millis() - t0 < 800) return;
 
+            // Initialize FT3168 Touch Controller (GPIO9 reset: HIGH -> LOW 20ms -> HIGH 50ms -> reg 0xA5 = 0x01)
+            id(tp_reset_pin).turn_on();
+            delay(2);
+            id(tp_reset_pin).turn_off();
+            delay(20);
+            id(tp_reset_pin).turn_on();
+            delay(50);
+            uint8_t ft_init[2] = {0xA5, 0x01}; // TOUCH_POWER_MONITOR mode (pulses GPIO38 low on touch)
+            if (id(bus_a)->write(0x38, ft_init, 2) == ERROR_OK) {
+              ESP_LOGI("touch", "FT3168 touch controller initialized at 0x38");
+            } else {
+              ESP_LOGW("touch", "FT3168 init write at 0x38 returned non-OK (will still read on GPIO38 interrupt)");
+            }
+
             uint8_t who = 0;
             if (read_block(0x00, &who, 1) && who == 0x05) {
               write_u8(0x02, (1 << 6));                          // CTRL1 auto-increment

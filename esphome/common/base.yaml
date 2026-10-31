@@ -164,14 +164,74 @@ button:
     name: "Restart Watch"
     icon: "mdi:restart"
 
-# Home Assistant Entity Subscriptions (On-Air Light & Weather)
+# Home Assistant Entity Subscriptions & Native Switch (On-Air Light & Weather)
+http_request:
+  id: watch_http_client
+  useragent: "ESPHome-Xiaozhi-Watch"
+  timeout: 4s
+  verify_ssl: false
+
 binary_sensor:
   - platform: homeassistant
     id: ha_on_air_state
     entity_id: ${on_air_entity}
     on_state:
       then:
+        - lambda: |-
+            id(on_air_local_state) = x;
+            id(on_air_watch_switch).publish_state(x);
         - script.execute: draw_display
+
+switch:
+  - platform: template
+    id: on_air_watch_switch
+    name: "On Air Status"
+    icon: "mdi:cast-audio"
+    optimistic: true
+    turn_on_action:
+      - lambda: id(on_air_local_state) = true;
+      - script.execute: draw_display
+      - if:
+          condition:
+            api.connected:
+          then:
+            - homeassistant.action:
+                action: switch.turn_on
+                data:
+                  entity_id: ${on_air_entity}
+            - homeassistant.event:
+                event: esphome.watch_on_air_toggle
+                data:
+                  state: "on"
+                  entity_id: ${on_air_entity}
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - http_request.post:
+                url: "${on_air_host}/switch/on_air_status/turn_on"
+    turn_off_action:
+      - lambda: id(on_air_local_state) = false;
+      - script.execute: draw_display
+      - if:
+          condition:
+            api.connected:
+          then:
+            - homeassistant.action:
+                action: switch.turn_off
+                data:
+                  entity_id: ${on_air_entity}
+            - homeassistant.event:
+                event: esphome.watch_on_air_toggle
+                data:
+                  state: "off"
+                  entity_id: ${on_air_entity}
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - http_request.post:
+                url: "${on_air_host}/switch/on_air_status/turn_off"
 
 text_sensor:
   - platform: wifi_info
@@ -211,14 +271,54 @@ sensor:
 script:
   - id: toggle_on_air_light
     then:
+      - lambda: |-
+          bool next_state = !id(on_air_local_state);
+          id(on_air_local_state) = next_state;
+          id(on_air_watch_switch).publish_state(next_state);
+      - script.execute: draw_display
       - if:
           condition:
-            api.connected:
+            wifi.connected:
           then:
-            - homeassistant.action:
-                action: switch.toggle
-                data:
-                  entity_id: ${on_air_entity}
+            - if:
+                condition:
+                  lambda: return id(on_air_local_state);
+                then:
+                  - logger.log: "Turning ON On-Air light via HA & direct HTTP (${on_air_host})..."
+                  - if:
+                      condition:
+                        api.connected:
+                      then:
+                        - homeassistant.action:
+                            action: switch.turn_on
+                            data:
+                              entity_id: ${on_air_entity}
+                        - homeassistant.event:
+                            event: esphome.watch_on_air_toggle
+                            data:
+                              state: "on"
+                              entity_id: ${on_air_entity}
+                  - http_request.post:
+                      url: "${on_air_host}/switch/on_air_status/turn_on"
+                else:
+                  - logger.log: "Turning OFF On-Air light via HA & direct HTTP (${on_air_host})..."
+                  - if:
+                      condition:
+                        api.connected:
+                      then:
+                        - homeassistant.action:
+                            action: switch.turn_off
+                            data:
+                              entity_id: ${on_air_entity}
+                        - homeassistant.event:
+                            event: esphome.watch_on_air_toggle
+                            data:
+                              state: "off"
+                              entity_id: ${on_air_entity}
+                  - http_request.post:
+                      url: "${on_air_host}/switch/on_air_status/turn_off"
+          else:
+            - script.execute: try_wifi_reconnect
 
   # Waits 45s when disconnected; if still not connected, disables Wi-Fi radio to save battery
   - id: wifi_offline_power_saver

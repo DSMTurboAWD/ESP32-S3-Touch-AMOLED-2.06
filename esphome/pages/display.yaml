@@ -57,6 +57,10 @@ globals:
     type: bool
     restore_value: false
     initial_value: "false"
+  - id: on_air_local_state
+    type: bool
+    restore_value: false
+    initial_value: "false"
 
 image:
   - file: ${error_illustration_file}
@@ -387,22 +391,30 @@ display:
             // Real-time HH:MM:SS in center
             it.strftime(216, 215, id(font_clock_time), Color::WHITE, TextAlign::CENTER, "%H:%M:%S", time);
 
-            // Subtle Wi-Fi / Offline status line (Tap y=270..315 to wake Wi-Fi immediately when offline)
+            // Subtle Wi-Fi + SD Card status line (Tap y=270..315 to wake Wi-Fi immediately when offline)
+            char sd_tag[20] = "";
+            if (id(sd_mounted).state && id(sd_total_mb).state > 0.0f) {
+              if (id(sd_total_mb).state >= 1024.0f) {
+                snprintf(sd_tag, sizeof(sd_tag), " • SD %.1fG", id(sd_total_mb).state / 1024.0f);
+              } else {
+                snprintf(sd_tag, sizeof(sd_tag), " • SD %.0fM", id(sd_total_mb).state);
+              }
+            }
             if (wifi_ok && id(wifi_ssid).has_state()) {
-              std::string status = "WiFi: " + id(wifi_ssid).state;
+              std::string status = "WiFi: " + id(wifi_ssid).state + sd_tag;
               it.printf(216, 285, id(font_ui_label), Color(90, 140, 220), TextAlign::CENTER, "%s", status.c_str());
             } else if (id(wifi_sleeping_offline)) {
-              it.printf(216, 285, id(font_ui_label), Color(135, 145, 160), TextAlign::CENTER, "Offline (RTC) • Tap to Check WiFi");
+              it.printf(216, 285, id(font_ui_label), Color(135, 145, 160), TextAlign::CENTER, "Offline (RTC)%s • Tap WiFi", sd_tag);
             } else {
-              it.printf(216, 285, id(font_ui_label), Color(220, 165, 60), TextAlign::CENTER, "Searching WiFi... (RTC Time)");
+              it.printf(216, 285, id(font_ui_label), Color(220, 165, 60), TextAlign::CENTER, "Searching WiFi...%s", sd_tag);
             }
           } else {
             it.printf(216, 215, id(font_clock_date), Color::WHITE, TextAlign::CENTER, "Syncing Time...");
           }
 
           // Quick On-Air / In-Meeting Status Pill (Touchable: y=330..380)
+          bool on_air = id(on_air_local_state);
           if (ha_ok) {
-            bool on_air = id(ha_on_air_state).state;
             Color pill_bg = on_air ? Color(185, 28, 42) : Color(24, 34, 48);
             Color pill_border = on_air ? Color(255, 90, 100) : Color(60, 80, 105);
             it.filled_rectangle(82, 332, 268, 48, pill_bg);
@@ -410,9 +422,12 @@ display:
             it.printf(216, 356, id(font_clock_small), Color::WHITE, TextAlign::CENTER,
                       on_air ? "IN MEETING: ON AIR" : "STATUS: AVAILABLE");
           } else {
-            it.filled_rectangle(82, 332, 268, 48, Color(22, 26, 32));
-            it.rectangle(82, 332, 268, 48, Color(65, 70, 80));
-            it.printf(216, 356, id(font_clock_small), Color(150, 155, 165), TextAlign::CENTER, "HOME ASSISTANT OFFLINE");
+            Color pill_bg = on_air ? Color(135, 28, 38) : Color(22, 26, 32);
+            Color pill_border = on_air ? Color(220, 85, 95) : Color(65, 70, 80);
+            it.filled_rectangle(82, 332, 268, 48, pill_bg);
+            it.rectangle(82, 332, 268, 48, pill_border);
+            it.printf(216, 356, id(font_clock_small), Color(185, 190, 200), TextAlign::CENTER,
+                      on_air ? "ON AIR (HA OFFLINE)" : "HA OFFLINE • TAP ON AIR");
           }
 
           // Quick Voice Assistant / Reconnect Pill (Touchable: y=392..438)
@@ -512,10 +527,10 @@ display:
           id(draw_watch_chrome).execute("ON AIR");
 
           bool ha_ok = id(ha_api).is_connected();
-          bool on_air = id(ha_on_air_state).state;
+          bool on_air = id(on_air_local_state);
 
-          Color card_bg = !ha_ok ? Color(32, 38, 48) : (on_air ? Color(195, 24, 38) : Color(20, 68, 52));
-          Color card_border = !ha_ok ? Color(90, 100, 115) : (on_air ? Color(255, 110, 120) : Color(46, 213, 115));
+          Color card_bg = on_air ? Color(195, 24, 38) : Color(20, 68, 52);
+          Color card_border = on_air ? Color(255, 110, 120) : Color(46, 213, 115);
 
           // Large Center Toggle Button (x=72..360, y=135..375)
           it.filled_rectangle(72, 135, 288, 240, card_bg);
@@ -524,24 +539,22 @@ display:
 
           // Status Dot + Main Heading
           it.filled_circle(216, 185, 16, Color::WHITE);
-          if (!ha_ok) {
-            it.filled_circle(216, 185, 10, Color(120, 130, 145));
-            it.printf(216, 248, id(font_clock_time), Color(190, 195, 205), TextAlign::CENTER, "OFFLINE");
-            it.printf(216, 305, id(font_clock_date), Color(150, 160, 175), TextAlign::CENTER, "Unavailable");
-            it.printf(216, 348, id(font_ui_label), Color(140, 155, 175), TextAlign::CENTER, "TAP TO RECONNECT WIFI");
-          } else if (on_air) {
+          if (on_air) {
             it.filled_circle(216, 185, 10, Color(255, 40, 55));
             it.printf(216, 248, id(font_clock_time), Color::WHITE, TextAlign::CENTER, "ON AIR");
-            it.printf(216, 305, id(font_clock_date), Color(255, 225, 225), TextAlign::CENTER, "In Meeting");
+            it.printf(216, 305, id(font_clock_date), Color(255, 225, 225), TextAlign::CENTER,
+                      ha_ok ? "In Meeting" : "In Meeting (HA Sync)");
             it.printf(216, 348, id(font_ui_label), Color(255, 200, 200), TextAlign::CENTER, "TAP CENTER TO TURN OFF");
           } else {
             it.filled_circle(216, 185, 10, Color(46, 213, 115));
             it.printf(216, 248, id(font_clock_time), Color::WHITE, TextAlign::CENTER, "OFF AIR");
-            it.printf(216, 305, id(font_clock_date), Color(210, 250, 225), TextAlign::CENTER, "Available");
+            it.printf(216, 305, id(font_clock_date), Color(210, 250, 225), TextAlign::CENTER,
+                      ha_ok ? "Available" : "Available (HA Sync)");
             it.printf(216, 348, id(font_ui_label), Color(180, 235, 205), TextAlign::CENTER, "TAP CENTER TO TURN ON");
           }
 
-          it.printf(216, 412, id(font_ui_label), Color(120, 135, 155), TextAlign::CENTER, "On-Air Light Switch");
+          it.printf(216, 412, id(font_ui_label), Color(120, 135, 155), TextAlign::CENTER,
+                    ha_ok ? "HA Connected • Tap to Toggle" : "Waiting for Home Assistant API");
 
       # ========================================================================
       # PAGE 3: MINI ESPHOME CONTROL & DIAGNOSTICS GRID
@@ -559,7 +572,7 @@ display:
           };
 
           // Row 1 (y=90..172): On-Air Toggle | Mic Mute Toggle
-          bool on_air = id(ha_on_air_state).state;
+          bool on_air = id(on_air_local_state);
           draw_tile(75, 90, 132, 82, "ON AIR", on_air ? "ACTIVE" : "OFF",
                     on_air ? Color(175, 28, 42) : Color(24, 34, 48),
                     on_air ? Color(255, 95, 105) : Color(65, 85, 110));
@@ -588,14 +601,19 @@ display:
                     Color(42, 30, 62), Color(150, 110, 220));
 
           // Row 4 Diagnostics & Actions (y=375..438): SD Card Status | Restart Watch
-          char sd_buf[20];
+          char sd_buf[24];
           if (id(sd_mounted).state && id(sd_total_mb).state > 0.0f) {
-            snprintf(sd_buf, sizeof(sd_buf), "%.1f GB", id(sd_total_mb).state / 1024.0f);
+            if (id(sd_total_mb).state >= 1024.0f) {
+              snprintf(sd_buf, sizeof(sd_buf), "%.1f GB", id(sd_total_mb).state / 1024.0f);
+            } else {
+              snprintf(sd_buf, sizeof(sd_buf), "%.0f/%.0fMB", id(sd_free_mb).state, id(sd_total_mb).state);
+            }
           } else {
             snprintf(sd_buf, sizeof(sd_buf), "NO CARD");
           }
           draw_tile(75, 375, 132, 64, "SD CARD", sd_buf,
-                    Color(20, 28, 38), Color(60, 75, 95));
+                    id(sd_mounted).state ? Color(20, 48, 38) : Color(20, 28, 38),
+                    id(sd_mounted).state ? Color(46, 204, 113) : Color(60, 75, 95));
 
           char diag_buf[20];
           if (!isnan(id(bat_v).state)) {

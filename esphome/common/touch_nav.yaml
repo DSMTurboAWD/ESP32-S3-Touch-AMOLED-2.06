@@ -1,22 +1,40 @@
 # FT3168/FT63X6 Touchscreen Polling, Screen Cycling, and Interactive Hit-Testing
 
-touchscreen:
-  - platform: ft63x6
-    id: my_touchscreen
-    i2c_id: bus_a
-    display: main_display
-    update_interval: 50ms
-    on_touch:
-      then:
-        - logger.log:
-            format: "Touch at (%d, %d) on page %d (watch_mode=%d)"
-            args: [touch.x, touch.y, 'id(current_page_index)', 'id(watch_mode)']
-        - script.execute:
-            id: handle_touch_event
-            x: !lambda return touch.x;
-            y: !lambda return touch.y;
+output:
+  - platform: gpio
+    id: tp_reset_pin
+    pin: GPIO9
 
 binary_sensor:
+  - platform: gpio
+    id: tp_int_pin
+    pin:
+      number: GPIO38
+      mode: INPUT_PULLUP
+      inverted: true
+    internal: true
+    on_press:
+      then:
+        - lambda: |-
+            using esphome::i2c::ERROR_OK;
+            constexpr uint8_t FT_ADDR = 0x38;
+
+            // Read 5 bytes starting at register 0x02 (TD_STATUS, X1_H, X1_L, Y1_H, Y1_L)
+            uint8_t reg = 0x02;
+            uint8_t buf[5] = {0};
+            if (id(bus_a)->write(FT_ADDR, &reg, 1) == ERROR_OK &&
+                id(bus_a)->read(FT_ADDR, buf, 5) == ERROR_OK) {
+              uint8_t touches = buf[0] & 0x0F;
+              uint16_t tx = ((uint16_t)(buf[1] & 0x0F) << 8) | buf[2];
+              uint16_t ty = ((uint16_t)(buf[3] & 0x0F) << 8) | buf[4];
+              ESP_LOGI("touch", "FT3168 IRQ: count=%u pos=(%u, %u) on page %d (watch_mode=%d)",
+                       touches, tx, ty, id(current_page_index), id(watch_mode));
+              if (touches >= 1 && touches <= 2) {
+                id(handle_touch_event).execute((int)tx, (int)ty);
+              }
+            } else {
+              ESP_LOGW("touch", "FT3168 IRQ triggered on GPIO38, but I2C read at 0x38 failed");
+            }
   - platform: gpio
     pin:
       number: 0
@@ -126,12 +144,12 @@ script:
           }
 
           // 4. In Watch Mode: Left / Right Edge or Bottom Nav Bar cycles screens
-          if (x < 75) {
+          if (x < 75 || (y > 445 && x < 175)) {
             id(current_page_index) = (id(current_page_index) + 3) % 4;
             id(draw_display).execute();
             return;
           }
-          if (x > 335) {
+          if (x > 335 || (y > 445 && x > 255)) {
             id(current_page_index) = (id(current_page_index) + 1) % 4;
             id(draw_display).execute();
             return;
@@ -147,10 +165,9 @@ script:
             if (y >= 265 && y <= 320 && !id(wifi_client).is_connected()) {
               id(try_wifi_reconnect).execute();
             }
-            // On-Air quick pill (y: 330..385)
-            else if (y >= 330 && y <= 385) {
-              if (ha_ok) id(toggle_on_air_light).execute();
-              else id(try_wifi_reconnect).execute();
+            // On-Air quick pill (y: 325..388)
+            else if (y >= 325 && y <= 388) {
+              id(toggle_on_air_light).execute();
             }
             // Voice Assistant / Reconnect button (y: 390..445)
             else if (y >= 390 && y <= 445) {
@@ -165,14 +182,13 @@ script:
               id(draw_display).execute();
             }
           } else if (page == 2) {
-            // In-Meeting / On-Air Page: tap large toggle button (y: 140..390)
-            if (y >= 140 && y <= 390) {
-              if (ha_ok) id(toggle_on_air_light).execute();
-              else id(try_wifi_reconnect).execute();
+            // In-Meeting / On-Air Page: tap anywhere in center card area (y: 120..420)
+            if (y >= 120 && y <= 420) {
+              id(toggle_on_air_light).execute();
             }
           } else if (page == 3) {
             // Mini Controls & Diagnostics Page (2x3 Grid + Bottom Bar)
-            bool left_col = (x <= 205);
+            bool left_col = (x <= 216);
 
             if (y >= 90 && y <= 175) {
               // Row 1: [On-Air Toggle] | [Mic Mute Toggle]

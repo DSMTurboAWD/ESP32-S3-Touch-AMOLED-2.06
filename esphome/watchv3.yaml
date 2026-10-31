@@ -8,8 +8,10 @@ substitutions:
   friendly_name: Xiaozhi Watch
   timezone: America/Chicago
 
-  # Home Assistant Entities
+  # Home Assistant & Direct Device Entities
   on_air_entity: "switch.on_air_screen_7b_on_air_status"
+  on_air_host: "http://192.168.20.14"
+  on_air_webhook_url: "${on_air_host}/switch/on_air_status/toggle"
   weather_entity: "weather.forecast_home"
 
   # Display & Theme Settings
